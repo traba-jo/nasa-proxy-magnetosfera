@@ -7,17 +7,15 @@ app.use(cors());
 
 app.get('/api/omni', async (req, res) => {
   try {
-    // ⚠️ OMNI_HRO_5MIN solo tiene datos hasta 2026-08-31
-    // Usamos las últimas 48 horas disponibles
-    const timeMin = '2026-08-30T00:00:00Z';
-    const timeMax = '2026-08-31T23:55:00Z';
+    // Rango válido para OMNI_HRO_5MIN (datos hasta 2026-08-31)
+    const timeMin = '2026-08-18T00:00:00Z';
+    const timeMax = '2026-08-18T23:55:00Z'; // Usamos el último día con datos definitivos
 
-    // ✅ Usamos time.min y time.max (con punto), como espera CDAWeb
     const nasaRes = await axios.get('https://cdaweb.gsfc.nasa.gov/hapi/data', {
       params: {
         id: 'OMNI_HRO_5MIN',
-        'time.min': timeMin,   // <-- CAMBIO CLAVE
-        'time.max': timeMax,   // <-- CAMBIO CLAVE
+        'time.min': timeMin,
+        'time.max': timeMax,
         format: 'json'
       }
     });
@@ -30,24 +28,42 @@ app.get('/api/omni', async (req, res) => {
       return res.json({ bz: 0, speed: 400, density: 5, status: 'Sin datos recientes' });
     }
 
-    // Encontrar índices por nombre exacto
     const idxBz = parametros.findIndex(p => p.name === 'BZ_GSM');
     const idxSpeed = parametros.findIndex(p => p.name === 'flow_speed');
     const idxDensity = parametros.findIndex(p => p.name === 'proton_density');
 
-    // Tomar la última fila
-    const ultima = filas[filas.length - 1];
+    // Valores "fill" (relleno) que significan "sin dato"
+    const FILL_BZ = 9999.99;
+    const FILL_SPEED = 99999.9;
+    const FILL_DENSITY = 999.99;
 
-    const bz = (idxBz !== -1 && ultima[idxBz] != null) ? ultima[idxBz] : 0;
-    const speed = (idxSpeed !== -1 && ultima[idxSpeed] != null) ? ultima[idxSpeed] : 400;
-    const density = (idxDensity !== -1 && ultima[idxDensity] != null) ? ultima[idxDensity] : 5;
+    // Buscar hacia atrás la última fila con datos VÁLIDOS
+    let bz = 0, speed = 400, density = 5, timestamp = null;
+
+    for (let i = filas.length - 1; i >= 0; i--) {
+      const fila = filas[i];
+      const bzVal = fila[idxBz];
+      const speedVal = fila[idxSpeed];
+      const densityVal = fila[idxDensity];
+
+      // Solo aceptamos valores que no sean fill ni null
+      if (bzVal !== FILL_BZ && bzVal != null && 
+          speedVal !== FILL_SPEED && speedVal != null &&
+          densityVal !== FILL_DENSITY && densityVal != null) {
+        bz = bzVal;
+        speed = speedVal;
+        density = densityVal;
+        timestamp = fila[0];
+        break;
+      }
+    }
 
     res.json({
       bz: bz,
       speed: speed,
       density: density,
       status: 'Datos NASA (OMNI, agosto 2026)',
-      timestamp: ultima[0]
+      timestamp: timestamp || 'Sin datos válidos'
     });
 
   } catch (error) {
