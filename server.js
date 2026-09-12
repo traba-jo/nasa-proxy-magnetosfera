@@ -13,10 +13,10 @@ app.get('/api/omni', async (req, res) => {
     const timeMin = hace6horas.toISOString().split('.')[0] + 'Z';
     const timeMax = ahora.toISOString().split('.')[0] + 'Z';
 
-    // ✅ Pedimos TODOS los parámetros (sin el parámetro 'parameters')
+    // ✅ Petición SIN el parámetro 'parameters'
     const nasaRes = await axios.get('https://cdaweb.gsfc.nasa.gov/hapi/data', {
       params: {
-        id: 'OMNI_HRO_5MIN',
+        id: 'OMNI_HRO_5MIN', // Dataset correcto para datos de 5 min
         time_min: timeMin,
         time_max: timeMax,
         format: 'json'
@@ -31,8 +31,8 @@ app.get('/api/omni', async (req, res) => {
       return res.json({ bz: 0, speed: 400, density: 5, status: 'Sin datos recientes' });
     }
 
-    // 🔍 Buscar los índices de las columnas que necesitamos por su 'name'
-    // En OMNI_HRO_5MIN los nombres son: "Bz_GSM", "flow_speed", "proton_density"
+    // 🔍 Buscar índices por nombre. En OMNI_HRO_5MIN los nombres son exactamente:
+    // "BZ_GSM", "flow_speed", "proton_density" (en mayúsculas/minúsculas específicas)
     const encontrarIndice = (nombreBuscado) => {
       return parametros.findIndex(p => p.name && p.name.includes(nombreBuscado));
     };
