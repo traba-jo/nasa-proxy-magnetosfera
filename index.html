@@ -11,7 +11,6 @@
 
   #hud {
     position: absolute; top: 18px; left: 18px;
-    color: #7fffd4;
     background: linear-gradient(135deg, rgba(0,20,40,0.85), rgba(0,10,25,0.7));
     backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
     padding: 16px 20px; border-radius: 14px;
@@ -88,7 +87,7 @@
   }
   #scanlines {
     position: absolute; inset: 0;
-    background: repeating-linear-gradient(0deg, rgba(0,255,200,0.015) 0px, rgba(0,255,200,0.015) 1px, transparent 1px, transparent 3px);
+    background: repeating-linear-gradient(0deg, rgba(0,255,200,0.012) 0px, rgba(0,255,200,0.012) 1px, transparent 1px, transparent 3px);
     pointer-events: none; z-index: 90; mix-blend-mode: screen;
   }
   @media (max-width: 640px) {
@@ -153,14 +152,17 @@ const engine = new BABYLON.Engine(canvas, true, {
   preserveDrawingBuffer: true, stencil: true, antialias: true
 });
 
-let scene, camera, earth, atmosphereOuter, atmosphereInner;
+let scene, camera, earth, earthMat;
+let atmosphereOuter, atmosphereInner;
+let haloRing;
 let magnetoFieldGroup;
 let solarWind, auroraN, auroraS;
+let polarBeams = [];
 let glowLayer;
 let flashOverlay = document.getElementById('flash-overlay');
 
 /* ============================================================
-   SHADER: ATMÓSFERA FRESNEL MULTICAPA
+   SHADER ATMÓSFERA — multicapa con Fresnel dorado/cyan
    ============================================================ */
 const atmoVertex = `
 precision highp float;
@@ -186,23 +188,39 @@ uniform vec3 sunDir;
 uniform float intensity;
 uniform float stormFactor;
 uniform float time;
+uniform float isOuter; // 1.0 = capa exterior, 0.0 = interior
+
 void main() {
   vec3 N = normalize(vNormal);
   vec3 V = normalize(cameraPosition - vWorldPos);
   vec3 L = normalize(sunDir);
+
   float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
   float sunFacing = max(dot(N, L), 0.0);
-  float dayMask = smoothstep(-0.3, 0.5, sunFacing);
-  vec3 colDeep = vec3(0.05, 0.15, 0.45);
-  vec3 colMid = vec3(0.15, 0.55, 0.95);
-  vec3 colBright = vec3(0.3, 0.85, 1.0);
-  vec3 colGold = vec3(0.85, 0.75, 0.4);
-  vec3 color = mix(colDeep, colMid, fresnel);
-  color = mix(color, colBright, pow(fresnel, 2.0));
-  float horizon = pow(max(0.0, dot(N, L)), 1.5) * fresnel;
-  color += colGold * horizon * 0.8;
-  float alpha = fresnel * intensity * (0.4 + dayMask * 0.8);
-  alpha += stormFactor * 0.15 * (0.5 + 0.5 * sin(time * 3.0));
+  float dayMask = smoothstep(-0.3, 0.6, sunFacing);
+
+  // Capa exterior: azul-cyan profundo
+  // Capa interior: dorado-verde brillante en el limbo
+  vec3 colOuter = vec3(0.1, 0.5, 1.0);
+  vec3 colOuter2 = vec3(0.4, 0.8, 1.0);
+  vec3 colInner = vec3(0.9, 0.75, 0.35);   // dorado
+  vec3 colInner2 = vec3(0.5, 1.0, 0.6);    // verde
+
+  vec3 color;
+  if (isOuter > 0.5) {
+    color = mix(colOuter, colOuter2, fresnel);
+  } else {
+    // Mezcla según ángulo respecto al Sol (dorado al horizonte)
+    float goldMix = pow(max(0.0, dot(N, L)), 1.2);
+    color = mix(colInner2, colInner, goldMix);
+    color = mix(color, vec3(1.0, 0.95, 0.7), pow(goldMix, 3.0) * 0.7);
+  }
+
+  // Alpha por fresnel
+  float alpha = fresnel * intensity * (0.5 + dayMask * 0.5);
+  // Pulsación durante tormenta
+  alpha += stormFactor * 0.2 * (0.5 + 0.5 * sin(time * 3.0));
+
   gl_FragColor = vec4(color, alpha);
 }
 `;
@@ -212,32 +230,35 @@ void main() {
    ============================================================ */
 function createScene() {
   scene = new BABYLON.Scene(engine);
-  scene.clearColor = new BABYLON.Color4(0.002, 0.004, 0.012, 1);
+  // Fondo azul profundo (no negro) para dar ambiente "poster NASA"
+  scene.clearColor = new BABYLON.Color4(0.01, 0.025, 0.07, 1);
 
-  camera = new BABYLON.ArcRotateCamera('cam', -Math.PI/2 + 0.3, Math.PI/2.15, 22, BABYLON.Vector3.Zero(), scene);
+  camera = new BABYLON.ArcRotateCamera('cam', -Math.PI/2 + 0.35, Math.PI/2.15, 14, BABYLON.Vector3.Zero(), scene);
   camera.attachControl(canvas, true);
-  camera.lowerRadiusLimit = 8;
-  camera.upperRadiusLimit = 70;
+  camera.lowerRadiusLimit = 6;
+  camera.upperRadiusLimit = 55;
   camera.wheelDeltaPercentage = 0.015;
   camera.inertia = 0.88;
   camera.panningSensibility = 0;
   camera.minZ = 0.1;
 
   const hemi = new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0, 1, 0), scene);
-  hemi.intensity = 0.15;
-  hemi.diffuse = new BABYLON.Color3(0.3, 0.4, 0.7);
-  hemi.groundColor = new BABYLON.Color3(0.05, 0.05, 0.15);
+  hemi.intensity = 0.28;
+  hemi.diffuse = new BABYLON.Color3(0.5, 0.6, 0.9);
+  hemi.groundColor = new BABYLON.Color3(0.05, 0.08, 0.18);
 
   const sun = new BABYLON.DirectionalLight('sun', new BABYLON.Vector3(-1, 0, 0), scene);
   sun.position = new BABYLON.Vector3(30, 0, 0);
-  sun.intensity = 1.5;
-  sun.diffuse = new BABYLON.Color3(1, 0.96, 0.88);
+  sun.intensity = 1.7;
+  sun.diffuse = new BABYLON.Color3(1, 0.97, 0.9);
 
-  createNebula();
+  createBackdrop();
   createStarfield();
   createEarth();
   createAtmosphere();
+  createHaloRing();
   createMagneticField();
+  createPolarBeams();
   createSolarWind();
   createAuroras();
   createPostFX();
@@ -246,43 +267,54 @@ function createScene() {
 }
 
 /* ============================================================
-   NEBULOSA DE FONDO
+   FONDO RADIAL — gradiente azul profundo tipo poster
    ============================================================ */
-function createNebula() {
-  const dome = BABYLON.MeshBuilder.CreateSphere('nebula', { diameter: 300, segments: 24 }, scene);
-  BABYLON.Effect.ShadersStore['nebulaVertex'] = `
+function createBackdrop() {
+  const dome = BABYLON.MeshBuilder.CreateSphere('backdrop', { diameter: 400, segments: 32 }, scene);
+
+  BABYLON.Effect.ShadersStore['backdropV'] = `
     precision highp float;
     attribute vec3 position;
     attribute vec3 normal;
     uniform mat4 worldViewProjection;
-    varying vec3 vPos;
+    varying vec3 vLocal;
     void main() {
-      vPos = position;
+      vLocal = position;
       gl_Position = worldViewProjection * vec4(position, 1.0);
     }
   `;
-  BABYLON.Effect.ShadersStore['nebulaFragment'] = `
+  BABYLON.Effect.ShadersStore['backdropF'] = `
     precision highp float;
-    varying vec3 vPos;
+    varying vec3 vLocal;
     void main() {
-      vec3 dir = normalize(vPos);
+      vec3 dir = normalize(vLocal);
       float y = dir.y;
-      float x = dir.x;
-      vec3 topCol = vec3(0.02, 0.05, 0.14);
-      vec3 midCol = vec3(0.005, 0.012, 0.04);
-      vec3 botCol = vec3(0.0, 0.0, 0.005);
-      float t = smoothstep(-0.5, 0.8, y);
+
+      // Gradiente vertical: azul profundo arriba, casi negro abajo
+      vec3 topCol = vec3(0.015, 0.045, 0.12);
+      vec3 midCol = vec3(0.02, 0.05, 0.14);
+      vec3 botCol = vec3(0.002, 0.008, 0.025);
+
+      float t = smoothstep(-0.9, 0.9, y);
       vec3 color = mix(botCol, midCol, smoothstep(-1.0, 0.0, y));
       color = mix(color, topCol, t);
-      float n1 = sin(x * 3.1 + 1.7) * cos(y * 2.4 - 0.5) * 0.5 + 0.5;
-      float n2 = sin(x * 7.3 - 2.1) * cos(y * 5.5 + 1.3) * 0.5 + 0.5;
-      float neb = pow(n1 * 0.6 + n2 * 0.4, 3.0) * 0.15;
-      color += vec3(0.05, 0.1, 0.25) * neb;
+
+      // Manchas de nebulosa tenues
+      float n1 = sin(dir.x * 3.1 + 1.7) * cos(dir.y * 2.4 - 0.5) * 0.5 + 0.5;
+      float n2 = sin(dir.x * 7.3 - 2.1) * cos(dir.y * 5.5 + 1.3) * 0.5 + 0.5;
+      float neb = pow(n1 * 0.6 + n2 * 0.4, 3.0) * 0.22;
+      color += vec3(0.03, 0.08, 0.22) * neb;
+
+      // Destello tenue en la parte superior (efecto "amanecer espacial")
+      float topGlow = pow(max(0.0, y), 4.0);
+      color += vec3(0.05, 0.12, 0.25) * topGlow;
+
       gl_FragColor = vec4(color, 1.0);
     }
   `;
-  const mat = new BABYLON.ShaderMaterial('nebulaMat', scene, {
-    vertex: 'nebula', fragment: 'nebula'
+
+  const mat = new BABYLON.ShaderMaterial('backdropMat', scene, {
+    vertex: 'backdrop', fragment: 'backdrop'
   }, {
     attributes: ['position', 'normal'],
     uniforms: ['worldViewProjection']
@@ -296,19 +328,19 @@ function createNebula() {
    ESTRELLAS
    ============================================================ */
 function createStarfield() {
-  const starfield = new BABYLON.ParticleSystem('stars', 3000, scene);
+  const starfield = new BABYLON.ParticleSystem('stars', 4000, scene);
   starfield.emitter = BABYLON.Vector3.Zero();
-  starfield.minEmitBox = new BABYLON.Vector3(-120, -120, -120);
-  starfield.maxEmitBox = new BABYLON.Vector3(120, 120, 120);
+  starfield.minEmitBox = new BABYLON.Vector3(-160, -160, -160);
+  starfield.maxEmitBox = new BABYLON.Vector3(160, 160, 160);
   starfield.color1 = new BABYLON.Color4(1, 1, 1, 1);
-  starfield.color2 = new BABYLON.Color4(0.7, 0.85, 1, 1);
+  starfield.color2 = new BABYLON.Color4(0.8, 0.85, 1, 1);
   starfield.colorDead = new BABYLON.Color4(1, 1, 1, 1);
   starfield.minSize = 0.03;
-  starfield.maxSize = 0.12;
+  starfield.maxSize = 0.15;
   starfield.minLifeTime = 99999;
   starfield.maxLifeTime = 99999;
   starfield.emitRate = 0;
-  starfield.manualEmitCount = 3000;
+  starfield.manualEmitCount = 4000;
   starfield.minEmitPower = 0;
   starfield.maxEmitPower = 0;
   starfield.updateSpeed = 0;
@@ -321,182 +353,242 @@ function createStarfield() {
    ============================================================ */
 function createEarth() {
   earth = BABYLON.MeshBuilder.CreateSphere('earth', { diameter: 4, segments: 64 }, scene);
-  const mat = new BABYLON.StandardMaterial('earthMat', scene);
+  earthMat = new BABYLON.StandardMaterial('earthMat', scene);
+
   const tex = new BABYLON.Texture(
     'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r150/examples/textures/planets/earth_atmos_2048.jpg',
     scene, false, false,
     BABYLON.Texture.TRILINEAR_SAMPLINGMODE,
     () => {},
     () => {
-      mat.diffuseColor = new BABYLON.Color3(0.1, 0.25, 0.5);
-      mat.emissiveColor = new BABYLON.Color3(0.05, 0.12, 0.25);
+      earthMat.diffuseColor = new BABYLON.Color3(0.15, 0.3, 0.55);
+      earthMat.emissiveColor = new BABYLON.Color3(0.08, 0.15, 0.28);
     }
   );
-  mat.diffuseTexture = tex;
-  mat.specularColor = new BABYLON.Color3(0.15, 0.18, 0.25);
-  mat.specularPower = 32;
-  mat.emissiveColor = new BABYLON.Color3(0.03, 0.04, 0.08);
-  mat.ambientColor = new BABYLON.Color3(0.1, 0.12, 0.2);
-  earth.material = mat;
+  earthMat.diffuseTexture = tex;
+  earthMat.specularColor = new BABYLON.Color3(0.2, 0.22, 0.3);
+  earthMat.specularPower = 28;
+  earthMat.emissiveColor = new BABYLON.Color3(0.05, 0.06, 0.1);
+  earthMat.ambientColor = new BABYLON.Color3(0.15, 0.18, 0.28);
+  earth.material = earthMat;
 }
 
 /* ============================================================
-   ATMÓSFERA
+   ATMÓSFERA — dos capas: exterior azul y interior dorada
    ============================================================ */
 function createAtmosphere() {
   BABYLON.Effect.ShadersStore['atmoV'] = atmoVertex;
   BABYLON.Effect.ShadersStore['atmoF'] = atmoFragment;
 
-  atmosphereOuter = BABYLON.MeshBuilder.CreateSphere('atmoOuter', { diameter: 5.2, segments: 48 }, scene);
+  atmosphereOuter = BABYLON.MeshBuilder.CreateSphere('atmoOuter', { diameter: 5.4, segments: 48 }, scene);
   const matOuter = new BABYLON.ShaderMaterial('atmoMatOuter', scene, {
     vertex: 'atmo', fragment: 'atmo'
   }, {
     attributes: ['position', 'normal'],
-    uniforms: ['world', 'worldViewProjection', 'sunDir', 'intensity', 'stormFactor', 'time'],
+    uniforms: ['world', 'worldViewProjection', 'sunDir', 'intensity', 'stormFactor', 'time', 'isOuter'],
     needAlphaBlending: true
   });
   matOuter.setVector3('sunDir', new BABYLON.Vector3(-1, 0, 0));
   matOuter.setFloat('intensity', 1.6);
   matOuter.setFloat('stormFactor', 0);
   matOuter.setFloat('time', 0);
+  matOuter.setFloat('isOuter', 1.0);
   matOuter.backFaceCulling = false;
   atmosphereOuter.material = matOuter;
   atmosphereOuter.isPickable = false;
 
-  atmosphereInner = BABYLON.MeshBuilder.CreateSphere('atmoInner', { diameter: 4.5, segments: 48 }, scene);
+  atmosphereInner = BABYLON.MeshBuilder.CreateSphere('atmoInner', { diameter: 4.4, segments: 48 }, scene);
   const matInner = new BABYLON.ShaderMaterial('atmoMatInner', scene, {
     vertex: 'atmo', fragment: 'atmo'
   }, {
     attributes: ['position', 'normal'],
-    uniforms: ['world', 'worldViewProjection', 'sunDir', 'intensity', 'stormFactor', 'time'],
+    uniforms: ['world', 'worldViewProjection', 'sunDir', 'intensity', 'stormFactor', 'time', 'isOuter'],
     needAlphaBlending: true
   });
   matInner.setVector3('sunDir', new BABYLON.Vector3(-1, 0, 0));
-  matInner.setFloat('intensity', 2.0);
+  matInner.setFloat('intensity', 2.4);
   matInner.setFloat('stormFactor', 0);
   matInner.setFloat('time', 0);
+  matInner.setFloat('isOuter', 0.0);
   matInner.backFaceCulling = false;
   atmosphereInner.material = matInner;
   atmosphereInner.isPickable = false;
 }
 
 /* ============================================================
-   CAMPO MAGNÉTICO DEFORMADO Y ENVOLVENTE
+   HALO RING — anillo ecuatorial tenue tipo "aurora ecuatorial"
+   ============================================================ */
+function createHaloRing() {
+  haloRing = BABYLON.MeshBuilder.CreateTorus('haloRing', {
+    diameter: 5.6, thickness: 0.06, tessellation: 96
+  }, scene);
+  haloRing.rotation.x = Math.PI / 2;
+  const mat = new BABYLON.StandardMaterial('haloMat', scene);
+  mat.emissiveColor = new BABYLON.Color3(1.0, 0.7, 0.3);
+  mat.diffuseColor = new BABYLON.Color3(0, 0, 0);
+  mat.specularColor = new BABYLON.Color3(0, 0, 0);
+  mat.alpha = 0.35;
+  mat.disableLighting = true;
+  haloRing.material = mat;
+  haloRing.isPickable = false;
+}
+
+/* ============================================================
+   CAMPO MAGNÉTICO — dipolo con jerarquía visual
+   Líneas exteriores gruesas y brillantes, interiores finas y tenues.
    ============================================================ */
 function createMagneticField() {
   magnetoFieldGroup = new BABYLON.TransformNode('fieldGroup', scene);
 
-  // --- Capa 1: Líneas de campo dipolares deformadas (tubos finos) ---
-  const numPlanes = 10;
+  const numPlanes = 12;
   const linesPerPlane = 4;
-  const tubeRadius = 0.03;
-  const colorCyan = new BABYLON.Color3(0.2, 0.85, 1.0);
 
   for (let p = 0; p < numPlanes; p++) {
     const phi = (p / numPlanes) * Math.PI * 2;
     for (let i = 0; i < linesPerPlane; i++) {
-      const L = 2.4 + i * 1.5;
+      const L = 2.3 + i * 1.7;
+      const isOuter = i === linesPerPlane - 1; // la más externa, gruesa
+
       const pathPoints = [];
-      const steps = 80;
+      const steps = 90;
       for (let s = 0; s <= steps; s++) {
         const theta = (s / steps) * Math.PI;
         const sinT = Math.sin(theta);
         const cosT = Math.cos(theta);
         const r0 = L * sinT * sinT;
         if (r0 < 2.05) continue;
+
         let x = r0 * sinT * Math.cos(phi);
         let y = r0 * cosT;
         let z = r0 * sinT * Math.sin(phi);
-        const daySide = x > 0;
-        if (daySide) {
-          x *= 0.55; y *= 0.85; z *= 0.85;
+
+        // Deformación por viento solar (surge desde +X)
+        if (x > 0) {
+          x *= 0.7; y *= 0.88; z *= 0.88;
         } else {
-          x *= 1.9; y *= 0.5;
+          x *= 1.35; y *= 0.65;
         }
+
         pathPoints.push(new BABYLON.Vector3(x, y, z));
       }
       if (pathPoints.length < 4) continue;
+
+      // Grosor según capa
+      const tubeRadius = isOuter ? 0.04 : 0.018 + (linesPerPlane - i) * 0.004;
+
       const tube = BABYLON.MeshBuilder.CreateTube('tube_' + p + '_' + i, {
-        path: pathPoints, radius: tubeRadius, tessellation: 8,
-        cap: BABYLON.Mesh.NO_CAP, updatable: false
+        path: pathPoints,
+        radius: tubeRadius,
+        tessellation: 8,
+        cap: BABYLON.Mesh.NO_CAP,
+        updatable: false
       }, scene);
+
       const mat = new BABYLON.StandardMaterial('tubeMat_' + p + '_' + i, scene);
-      mat.emissiveColor = colorCyan;
+
+      // Paleta con jerarquía:
+      // Exterior: cyan brillante
+      // Medio: cyan suave
+      // Interior: verde-cyan tenue
+      if (isOuter) {
+        mat.emissiveColor = new BABYLON.Color3(0.3, 0.95, 1.0);
+        mat.alpha = 0.85;
+      } else if (i >= 2) {
+        mat.emissiveColor = new BABYLON.Color3(0.2, 0.75, 1.0);
+        mat.alpha = 0.5;
+      } else {
+        mat.emissiveColor = new BABYLON.Color3(0.4, 1.0, 0.7);
+        mat.alpha = 0.35;
+      }
+
       mat.diffuseColor = new BABYLON.Color3(0, 0, 0);
       mat.specularColor = new BABYLON.Color3(0, 0, 0);
-      mat.alpha = 0.5 - i * 0.08;
       mat.disableLighting = true;
+
       tube.material = mat;
       tube.parent = magnetoFieldGroup;
       tube.isPickable = false;
+
       if (!magnetoFieldGroup.metadata) magnetoFieldGroup.metadata = [];
-      magnetoFieldGroup.metadata.push({ mesh: tube, mat, baseAlpha: mat.alpha });
+      magnetoFieldGroup.metadata.push({
+        mesh: tube, mat, baseAlpha: mat.alpha, isOuter
+      });
     }
   }
-
-  // --- Capa 2: Superficie de la magnetopausa (malla translúcida) ---
-  // Crea una forma de "bala" o "lágrima" que envuelve la Tierra.
-  // La nariz está a ~10 RE en el lado día, la cola se estira hacia -X.
-  const magnetopause = BABYLON.MeshBuilder.CreateSphere('magnetopause', {
-    diameter: 22, // ~11 RE de radio en el lado diurno (ajustado visualmente)
-    segments: 64
-  }, scene);
-
-  // Deformar la esfera para que se vea como magnetopausa
-  const positions = magnetopause.getVerticesData(BABYLON.VertexBuffer.PositionKind);
-  const normals = magnetopause.getVerticesData(BABYLON.VertexBuffer.NormalKind);
-  const newPos = [];
-  for (let i = 0; i < positions.length; i += 3) {
-    let x = positions[i];
-    let y = positions[i + 1];
-    let z = positions[i + 2];
-    // El sol está en +X. La magnetopausa se comprime en +X y se estira en -X.
-    if (x > 0) {
-      // Lado día: comprimir la esfera
-      const scale = 0.7;
-      x *= scale;
-      y *= scale;
-      z *= scale;
-    } else {
-      // Lado noche: estirar en -X
-      const stretch = 2.5;
-      x *= stretch;
-      y *= 0.6;
-      z *= 0.6;
-    }
-    newPos.push(x, y, z);
-  }
-  magnetopause.updateVerticesData(BABYLON.VertexBuffer.PositionKind, newPos);
-  magnetopause.refreshBoundingInfo();
-
-  const magMat = new BABYLON.StandardMaterial('magPauseMat', scene);
-  magMat.emissiveColor = new BABYLON.Color3(0.1, 0.6, 1.0);
-  magMat.diffuseColor = new BABYLON.Color3(0, 0, 0);
-  magMat.specularColor = new BABYLON.Color3(0, 0, 0);
-  magMat.alpha = 0.04; // Muy sutil
-  magMat.backFaceCulling = false;
-  magMat.disableLighting = true;
-  magnetopause.material = magMat;
-  magnetopause.parent = magnetoFieldGroup;
-  magnetopause.isPickable = false;
 }
 
 /* ============================================================
-   VIENTO SOLAR
+   HACES POLARES — el detalle estrella de la referencia
+   8 rayos de luz dorada/cyan saliendo de cada polo.
+   ============================================================ */
+function createPolarBeams() {
+  const beamCount = 8;
+  const beamLength = 2.2;
+  const beamRadius = 0.06;
+
+  for (let hemi = 0; hemi < 2; hemi++) {
+    const dir = hemi === 0 ? 1 : -1; // 1 = norte, -1 = sur
+    for (let i = 0; i < beamCount; i++) {
+      const angle = (i / beamCount) * Math.PI * 2;
+      const tilt = 0.35 + Math.random() * 0.15;
+
+      // Punto de partida: cerca del polo
+      const startX = Math.cos(angle) * 0.6;
+      const startZ = Math.sin(angle) * 0.6;
+      const startY = dir * 1.95;
+
+      // Punto final: hacia afuera y arriba
+      const endX = Math.cos(angle) * (0.6 + tilt * 2.2);
+      const endZ = Math.sin(angle) * (0.6 + tilt * 2.2);
+      const endY = dir * (1.95 + beamLength);
+
+      const beam = BABYLON.MeshBuilder.CreateTube('beam_' + hemi + '_' + i, {
+        path: [
+          new BABYLON.Vector3(startX, startY, startZ),
+          new BABYLON.Vector3(startX * 1.15, startY + dir * beamLength * 0.5, startZ * 1.15),
+          new BABYLON.Vector3(endX, endY, endZ)
+        ],
+        radius: beamRadius,
+        tessellation: 8,
+        cap: BABYLON.Mesh.NO_CAP,
+        updatable: false
+      }, scene);
+
+      const mat = new BABYLON.StandardMaterial('beamMat_' + hemi + '_' + i, scene);
+      // Alternar dorado y cyan
+      if (i % 2 === 0) {
+        mat.emissiveColor = new BABYLON.Color3(1.0, 0.85, 0.4);
+      } else {
+        mat.emissiveColor = new BABYLON.Color3(0.5, 0.9, 1.0);
+      }
+      mat.diffuseColor = new BABYLON.Color3(0, 0, 0);
+      mat.specularColor = new BABYLON.Color3(0, 0, 0);
+      mat.alpha = 0.6;
+      mat.disableLighting = true;
+      beam.material = mat;
+      beam.isPickable = false;
+      beam.parent = magnetoFieldGroup;
+      polarBeams.push({ mesh: beam, mat, baseAlpha: 0.6 });
+    }
+  }
+}
+
+/* ============================================================
+   VIENTO SOLAR — partículas variadas
    ============================================================ */
 function createSolarWind() {
   solarWind = new BABYLON.ParticleSystem('solarWind', 3500, scene);
   solarWind.particleTexture = new BABYLON.Texture(
     'https://playground.babylonjs.com/textures/flare.png', scene
   );
-  solarWind.emitter = new BABYLON.Vector3(40, 0, 0);
-  solarWind.minEmitBox = new BABYLON.Vector3(-1, -20, -20);
-  solarWind.maxEmitBox = new BABYLON.Vector3(1, 20, 20);
-  solarWind.color1 = new BABYLON.Color4(1.0, 0.7, 0.2, 0.55);
-  solarWind.color2 = new BABYLON.Color4(1.0, 0.4, 0.1, 0.4);
+  solarWind.emitter = new BABYLON.Vector3(35, 0, 0);
+  solarWind.minEmitBox = new BABYLON.Vector3(-1, -18, -18);
+  solarWind.maxEmitBox = new BABYLON.Vector3(1, 18, 18);
+  solarWind.color1 = new BABYLON.Color4(1.0, 0.75, 0.3, 0.7);
+  solarWind.color2 = new BABYLON.Color4(1.0, 0.5, 0.5, 0.5);
   solarWind.colorDead = new BABYLON.Color4(0, 0, 0, 0);
   solarWind.minSize = 0.05;
-  solarWind.maxSize = 0.15;
+  solarWind.maxSize = 0.18;
   solarWind.minLifeTime = 2.5;
   solarWind.maxLifeTime = 4.5;
   solarWind.direction1 = new BABYLON.Vector3(-1, -0.02, -0.02);
@@ -511,37 +603,37 @@ function createSolarWind() {
 }
 
 /* ============================================================
-   AURORAS
+   AURORAS — más vistosas
    ============================================================ */
 function createAuroras() {
-  auroraN = new BABYLON.ParticleSystem('auroraN', 1200, scene);
+  auroraN = new BABYLON.ParticleSystem('auroraN', 1500, scene);
   auroraN.particleTexture = new BABYLON.Texture(
     'https://playground.babylonjs.com/textures/flare.png', scene
   );
   auroraN.emitter = new BABYLON.Vector3(0, 2.05, 0);
-  auroraN.minEmitBox = new BABYLON.Vector3(-1.0, 0, -1.0);
-  auroraN.maxEmitBox = new BABYLON.Vector3(1.0, 0.5, 1.0);
-  auroraN.color1 = new BABYLON.Color4(0.25, 1.0, 0.45, 0.7);
-  auroraN.color2 = new BABYLON.Color4(0.5, 0.35, 1.0, 0.6);
+  auroraN.minEmitBox = new BABYLON.Vector3(-1.2, 0, -1.2);
+  auroraN.maxEmitBox = new BABYLON.Vector3(1.2, 0.6, 1.2);
+  auroraN.color1 = new BABYLON.Color4(0.3, 1.0, 0.5, 0.8);
+  auroraN.color2 = new BABYLON.Color4(0.6, 0.4, 1.0, 0.7);
   auroraN.colorDead = new BABYLON.Color4(0, 0, 0, 0);
-  auroraN.minSize = 0.1;
-  auroraN.maxSize = 0.45;
+  auroraN.minSize = 0.12;
+  auroraN.maxSize = 0.55;
   auroraN.minLifeTime = 1.2;
-  auroraN.maxLifeTime = 2.5;
-  auroraN.emitRate = 60;
+  auroraN.maxLifeTime = 2.8;
+  auroraN.emitRate = 80;
   auroraN.blendMode = BABYLON.ParticleSystem.BLENDMODE_ADD;
-  auroraN.direction1 = new BABYLON.Vector3(-0.15, 0.6, -0.15);
-  auroraN.direction2 = new BABYLON.Vector3(0.15, 1.2, 0.15);
-  auroraN.minEmitPower = 0.3;
-  auroraN.maxEmitPower = 0.8;
-  auroraN.gravity = new BABYLON.Vector3(0, 0.25, 0);
+  auroraN.direction1 = new BABYLON.Vector3(-0.2, 0.6, -0.2);
+  auroraN.direction2 = new BABYLON.Vector3(0.2, 1.4, 0.2);
+  auroraN.minEmitPower = 0.4;
+  auroraN.maxEmitPower = 1.0;
+  auroraN.gravity = new BABYLON.Vector3(0, 0.3, 0);
   auroraN.start();
 
   auroraS = auroraN.clone('auroraS');
   auroraS.emitter = new BABYLON.Vector3(0, -2.05, 0);
-  auroraS.direction1 = new BABYLON.Vector3(-0.15, -0.6, -0.15);
-  auroraS.direction2 = new BABYLON.Vector3(0.15, -1.2, 0.15);
-  auroraS.gravity = new BABYLON.Vector3(0, -0.25, 0);
+  auroraS.direction1 = new BABYLON.Vector3(-0.2, -0.6, -0.2);
+  auroraS.direction2 = new BABYLON.Vector3(0.2, -1.4, 0.2);
+  auroraS.gravity = new BABYLON.Vector3(0, -0.3, 0);
   auroraS.start();
 }
 
@@ -550,8 +642,8 @@ function createAuroras() {
    ============================================================ */
 function createPostFX() {
   glowLayer = new BABYLON.GlowLayer('glow', scene);
-  glowLayer.intensity = 0.6;
-  glowLayer.blurKernelSize = 32;
+  glowLayer.intensity = 0.85;
+  glowLayer.blurKernelSize = 48;
 
   const pipeline = new BABYLON.DefaultRenderingPipeline('pipeline', true, scene, [camera]);
   pipeline.samples = 4;
@@ -561,13 +653,13 @@ function createPostFX() {
     pipeline.imageProcessing.vignetteWeight = 3.0;
     pipeline.imageProcessing.vignetteStretch = 0.6;
     pipeline.imageProcessing.vignetteColor = new BABYLON.Color4(0, 0, 0, 0);
-    pipeline.imageProcessing.contrast = 1.15;
-    pipeline.imageProcessing.exposure = 1.0;
+    pipeline.imageProcessing.contrast = 1.18;
+    pipeline.imageProcessing.exposure = 1.05;
   }
   pipeline.bloomEnabled = true;
-  pipeline.bloomThreshold = 0.8;
-  pipeline.bloomWeight = 0.3;
-  pipeline.bloomKernel = 48;
+  pipeline.bloomThreshold = 0.75;
+  pipeline.bloomWeight = 0.4;
+  pipeline.bloomKernel = 64;
   pipeline.bloomScale = 0.5;
 }
 
@@ -588,42 +680,74 @@ function updateVisuals() {
     atmosphereInner.material.setFloat('time', t);
   }
 
+  // Halo ring pulsa y se intensifica en tormenta
+  if (haloRing) {
+    haloRing.material.alpha = 0.28 + Math.sin(t * 1.2) * 0.05 + state.stormIntensity * 0.3;
+    if (state.bz < -5) {
+      haloRing.material.emissiveColor = new BABYLON.Color3(1.0, 0.35, 0.15);
+    } else {
+      haloRing.material.emissiveColor = new BABYLON.Color3(1.0, 0.7, 0.3);
+    }
+  }
+
+  // Viento solar
   if (solarWind) {
     const speedNorm = Math.max(0.6, state.speed / 500);
     solarWind.emitRate = 1200 * speedNorm;
     solarWind.minEmitPower = 3 * speedNorm;
     solarWind.maxEmitPower = 6 * speedNorm;
     if (state.bz < -5) {
-      solarWind.color1 = new BABYLON.Color4(1.0, 0.25, 0.1, 0.7);
-      solarWind.color2 = new BABYLON.Color4(0.9, 0.15, 0.35, 0.6);
+      solarWind.color1 = new BABYLON.Color4(1.0, 0.25, 0.1, 0.8);
+      solarWind.color2 = new BABYLON.Color4(0.9, 0.1, 0.3, 0.7);
     } else {
-      solarWind.color1 = new BABYLON.Color4(1.0, 0.7, 0.2, 0.55);
-      solarWind.color2 = new BABYLON.Color4(1.0, 0.4, 0.1, 0.4);
+      solarWind.color1 = new BABYLON.Color4(1.0, 0.75, 0.3, 0.7);
+      solarWind.color2 = new BABYLON.Color4(1.0, 0.5, 0.5, 0.5);
     }
   }
 
+  // Líneas magnéticas: cambian color con tormenta
   if (magnetoFieldGroup && magnetoFieldGroup.metadata) {
     magnetoFieldGroup.metadata.forEach((item) => {
-      const alphaBoost = state.stormIntensity * 0.3;
-      item.mat.alpha = Math.min(0.85, item.baseAlpha + alphaBoost);
+      const alphaBoost = state.stormIntensity * 0.2;
+      item.mat.alpha = Math.min(0.9, item.baseAlpha + alphaBoost);
+
       if (state.bz < -5) {
-        item.mat.emissiveColor = new BABYLON.Color3(1.0, 0.45, 0.15);
+        if (item.isOuter) {
+          item.mat.emissiveColor = new BABYLON.Color3(1.0, 0.4, 0.15);
+        } else {
+          item.mat.emissiveColor = new BABYLON.Color3(1.0, 0.6, 0.3);
+        }
       } else if (state.bz < -2) {
-        item.mat.emissiveColor = new BABYLON.Color3(0.5, 0.85, 1.0);
+        item.mat.emissiveColor = item.isOuter
+          ? new BABYLON.Color3(0.6, 1.0, 1.0)
+          : new BABYLON.Color3(0.4, 0.9, 0.9);
       } else {
-        item.mat.emissiveColor = new BABYLON.Color3(0.2, 0.85, 1.0);
+        item.mat.emissiveColor = item.isOuter
+          ? new BABYLON.Color3(0.3, 0.95, 1.0)
+          : new BABYLON.Color3(0.2, 0.75, 1.0);
       }
     });
   }
 
+  // Haces polares: pulsan y se intensifican
+  polarBeams.forEach((item, idx) => {
+    const pulse = 0.5 + 0.5 * Math.sin(t * 2.0 + idx * 0.7);
+    item.mat.alpha = item.baseAlpha * (0.7 + pulse * 0.3) + state.stormIntensity * 0.25;
+    if (state.bz < -5) {
+      item.mat.emissiveColor = new BABYLON.Color3(1.0, 0.4, 0.2);
+    }
+  });
+
+  // Auroras
   if (auroraN && auroraS) {
-    const rate = 40 + state.stormIntensity * 260;
+    const rate = 60 + state.stormIntensity * 300;
     auroraN.emitRate = rate;
     auroraS.emitRate = rate;
-    auroraN.maxSize = 0.35 + state.stormIntensity * 0.5;
-    auroraS.maxSize = 0.35 + state.stormIntensity * 0.5;
+    auroraN.maxSize = 0.4 + state.stormIntensity * 0.6;
+    auroraS.maxSize = 0.4 + state.stormIntensity * 0.6;
   }
 
+  // Flash de tormenta
   if (state.stormIntensity > 0.5) {
     flashOverlay.style.opacity = (state.stormIntensity - 0.5) * 1.0;
   } else {
@@ -696,25 +820,22 @@ async function fetchData() {
 }
 
 /* ============================================================
-   CÁMARA CINEMATOGRÁFICA
+   CÁMARA
    ============================================================ */
 function updateCinema() {
   if (!state.cinemaMode) return;
   camera.alpha += 0.0008;
   const t = performance.now() * 0.00015;
-  camera.beta = Math.PI / 2.15 + Math.sin(t) * 0.07;
+  camera.beta = Math.PI / 2.15 + Math.sin(t) * 0.08;
 }
 
-/* ============================================================
-   INPUT
-   ============================================================ */
 window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   if (k === 'c') state.cinemaMode = !state.cinemaMode;
   if (k === 'r') {
-    camera.alpha = -Math.PI / 2 + 0.3;
+    camera.alpha = -Math.PI / 2 + 0.35;
     camera.beta = Math.PI / 2.15;
-    camera.radius = 22;
+    camera.radius = 14;
   }
 });
 
@@ -731,6 +852,7 @@ function animate() {
   if (magnetoFieldGroup) magnetoFieldGroup.rotation.y = earth ? earth.rotation.y : 0;
   if (atmosphereOuter) atmosphereOuter.rotation.y = earth ? earth.rotation.y : 0;
   if (atmosphereInner) atmosphereInner.rotation.y = earth ? earth.rotation.y : 0;
+  if (haloRing) haloRing.rotation.z += dt * 0.05;
 
   updateCinema();
   updateVisuals();
