@@ -7,16 +7,14 @@ app.use(cors());
 
 app.get('/api/omni', async (req, res) => {
   try {
-    const ahora = new Date();
-    const hace6horas = new Date(ahora.getTime() - 6 * 60 * 60 * 1000);
+    // ⚠️ OMNI_HRO_5MIN solo tiene datos hasta 2026-08-31
+    // Usamos las últimas 48 horas disponibles
+    const timeMin = '2026-08-30T00:00:00Z';
+    const timeMax = '2026-08-31T23:55:00Z';
 
-    const timeMin = hace6horas.toISOString().split('.')[0] + 'Z';
-    const timeMax = ahora.toISOString().split('.')[0] + 'Z';
-
-    // ✅ Petición SIN el parámetro 'parameters'
     const nasaRes = await axios.get('https://cdaweb.gsfc.nasa.gov/hapi/data', {
       params: {
-        id: 'OMNI_HRO_5MIN', // Dataset correcto para datos de 5 min
+        id: 'OMNI_HRO_5MIN',
         time_min: timeMin,
         time_max: timeMax,
         format: 'json'
@@ -31,16 +29,12 @@ app.get('/api/omni', async (req, res) => {
       return res.json({ bz: 0, speed: 400, density: 5, status: 'Sin datos recientes' });
     }
 
-    // 🔍 Buscar índices por nombre. En OMNI_HRO_5MIN los nombres son exactamente:
-    // "BZ_GSM", "flow_speed", "proton_density" (en mayúsculas/minúsculas específicas)
-    const encontrarIndice = (nombreBuscado) => {
-      return parametros.findIndex(p => p.name && p.name.includes(nombreBuscado));
-    };
+    // Encontrar índices por nombre exacto (según la respuesta de /info)
+    const idxBz = parametros.findIndex(p => p.name === 'BZ_GSM');
+    const idxSpeed = parametros.findIndex(p => p.name === 'flow_speed');
+    const idxDensity = parametros.findIndex(p => p.name === 'proton_density');
 
-    const idxBz = encontrarIndice('Bz_GSM');        // Bz en GSM
-    const idxSpeed = encontrarIndice('flow_speed'); // Velocidad del viento solar
-    const idxDensity = encontrarIndice('proton_density'); // Densidad de protones
-
+    // Tomar la última fila
     const ultima = filas[filas.length - 1];
 
     const bz = (idxBz !== -1 && ultima[idxBz] != null) ? ultima[idxBz] : 0;
@@ -51,7 +45,7 @@ app.get('/api/omni', async (req, res) => {
       bz: bz,
       speed: speed,
       density: density,
-      status: 'Datos NASA en vivo',
+      status: 'Datos NASA (OMNI, agosto 2026)',
       timestamp: ultima[0]
     });
 
