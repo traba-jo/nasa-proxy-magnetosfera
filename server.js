@@ -8,40 +8,51 @@ app.use(cors());
 // Endpoint que tu frontend va a llamar
 app.get('/api/omni', async (req, res) => {
   try {
-    // 1. Pedir datos a NASA CDAWeb HAPI (OMNI 1 hora)
-    // Nota: usamos los últimos datos disponibles
+    // 1. Pedir datos a NASA CDAWeb HAPI (usando el dataset de 5 minutos)
     const ahora = new Date();
-    const hace2horas = new Date(ahora.getTime() - 2 * 60 * 60 * 1000);
+    const hace6horas = new Date(ahora.getTime() - 6 * 60 * 60 * 1000);
     
-    const timeMin = hace2horas.toISOString().split('.')[0] + 'Z';
+    const timeMin = hace6horas.toISOString().split('.')[0] + 'Z';
     const timeMax = ahora.toISOString().split('.')[0] + 'Z';
 
     const nasaRes = await axios.get('https://cdaweb.gsfc.nasa.gov/hapi/data', {
       params: {
-        id: 'OMNI2_H0_MRG1HR', // Dataset de OMNI
+        id: 'OMNI_HRO_5MIN', // <-- Dataset corregido
         time_min: timeMin,
         time_max: timeMax,
         format: 'json'
       }
     });
 
-    // 2. Extraer solo lo que necesitamos
-    // El orden de los parámetros en OMNI2_H0_MRG1HR es conocido:
-    // [0]=Time, [1]=Bx, [2]=By, [3]=Bz GSE, [4]=Bz GSM, ... [8]=Speed, [9]=Density
-    const datos = nasaRes.data.data;
-    if (!datos || datos.length === 0) {
+    // 2. Extraer datos buscando por nombre de parámetro (más robusto)
+    const data = nasaRes.data;
+    const parametros = data.parameters; // Lista de parámetros disponibles
+    const filas = data.data;
+
+    if (!filas || filas.length === 0) {
       return res.json({ bz: 0, speed: 400, density: 5, status: 'Sin datos recientes' });
     }
 
+    // Encontrar los índices de los parámetros que nos interesan
+    // Los nombres pueden variar, buscamos coincidencias flexibles
+    const idxBz = parametros.findIndex(p => p.name.toLowerCase().includes('bz'));
+    const idxSpeed = parametros.findIndex(p => p.name.toLowerCase().includes('v') && !p.name.toLowerCase().includes('vy') && !p.name.toLowerCase().includes('vz')); // Velocidad total (puede ser 'V' o 'sw_v_bulk')
+    const idxDensity = parametros.findIndex(p => p.name.toLowerCase().includes('n') || p.name.toLowerCase().includes('density'));
+
     // Tomar la última fila disponible
-    const ultima = datos[datos.length - 1];
-    
+    const ultima = filas[filas.length - 1];
+
+    // Extraer valores usando los índices encontrados (si no se encuentra, usar fallback)
+    const bz = (idxBz !== -1 && ultima[idxBz] !== undefined) ? ultima[idxBz] : 0;
+    const speed = (idxSpeed !== -1 && ultima[idxSpeed] !== undefined) ? ultima[idxSpeed] : 400;
+    const density = (idxDensity !== -1 && ultima[idxDensity] !== undefined) ? ultima[idxDensity] : 5;
+
     const resultado = {
-      bz: ultima[4] !== undefined ? ultima[4] : 0,        // Bz GSM (nT)
-      speed: ultima[8] !== undefined ? ultima[8] : 400,   // Velocidad (km/s)
-      density: ultima[9] !== undefined ? ultima[9] : 5,   // Densidad (n/cc)
+      bz: bz,
+      speed: speed,
+      density: density,
       status: 'Datos NASA en vivo',
-      timestamp: ultima[0]
+      timestamp: ultima[0] // El primer campo suele ser el tiempo
     };
 
     res.json(resultado);
@@ -53,7 +64,7 @@ app.get('/api/omni', async (req, res) => {
   }
 });
 
-// Health check (Render lo usa para saber si el servicio está vivo)
+// Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
