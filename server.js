@@ -12,11 +12,12 @@ app.get('/api/omni', async (req, res) => {
     const timeMin = '2026-08-30T00:00:00Z';
     const timeMax = '2026-08-31T23:55:00Z';
 
+    // ✅ Usamos time.min y time.max (con punto), como espera CDAWeb
     const nasaRes = await axios.get('https://cdaweb.gsfc.nasa.gov/hapi/data', {
       params: {
         id: 'OMNI_HRO_5MIN',
-        time_min: timeMin,
-        time_max: timeMax,
+        'time.min': timeMin,   // <-- CAMBIO CLAVE
+        'time.max': timeMax,   // <-- CAMBIO CLAVE
         format: 'json'
       }
     });
@@ -29,7 +30,7 @@ app.get('/api/omni', async (req, res) => {
       return res.json({ bz: 0, speed: 400, density: 5, status: 'Sin datos recientes' });
     }
 
-    // Encontrar índices por nombre exacto (según la respuesta de /info)
+    // Encontrar índices por nombre exacto
     const idxBz = parametros.findIndex(p => p.name === 'BZ_GSM');
     const idxSpeed = parametros.findIndex(p => p.name === 'flow_speed');
     const idxDensity = parametros.findIndex(p => p.name === 'proton_density');
